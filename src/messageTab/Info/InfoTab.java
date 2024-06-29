@@ -1,117 +1,176 @@
 package messageTab.Info;
 
-import java.awt.BorderLayout;
 import java.awt.Component;
+import java.util.List;
 
 import javax.swing.JPanel;
-import javax.swing.border.EmptyBorder;
+import javax.swing.SwingWorker;
 
-import org.apache.commons.text.StringEscapeUtils;
+import org.apache.commons.lang3.StringUtils;
 
+import com.bit4woo.utilbox.utils.ByteArrayUtils;
+import com.bit4woo.utilbox.utils.EmailUtils;
+import com.bit4woo.utilbox.utils.TextUtils;
+
+import base.FindUrlAction;
+import burp.BurpExtender;
 import burp.IBurpExtenderCallbacks;
 import burp.IExtensionHelpers;
 import burp.IMessageEditorController;
 import burp.IMessageEditorTab;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
 
-/** 
+/**
  * @author bit4woo
- * @github https://github.com/bit4woo 
- * @version CreateTime：2022年1月15日 下午11:07:59 
- * 
- * 想要正确显示中文内容，有三个编码设置会影响结果：
- * 1、原始编码，通过代码尝试自动获取，但是结果可能不准确，极端情况下需要手动设置。
- * 2、转换后的编码，手动设置。
- * 3、burp设置的显示编码，显示时时用的编码，应该和转换后的编码一致。
- * 
- * 原始数据是byte[],但也是文本内容的某种编码的byte[].
- * 
+ * @github https://github.com/bit4woo
  */
-public class InfoTab implements IMessageEditorTab{
+public class InfoTab implements IMessageEditorTab {
 	private JPanel panel;
-
 	private byte[] originContent;
+	public IMessageEditorController controller;
 
-	private static IExtensionHelpers helpers;
+	int triggerTime = 1;
+	boolean debug = false;
 
-	public InfoTab(IMessageEditorController controller, boolean editable, IExtensionHelpers helpers, IBurpExtenderCallbacks callbacks)
-	{
-		panel = createpanel();
-		InfoTab.helpers = helpers;
+	public byte[] getOriginContent() {
+		return originContent;
+	}
+
+	public void setOriginContent(byte[] originContent) {
+		this.originContent = originContent;
 	}
 
 
-	public JPanel createpanel() {
+	public IMessageEditorController getController() {
+		return controller;
+	}
 
-		JPanel contentPane = new JPanel();
-		contentPane.setBorder(new EmptyBorder(5, 5, 5, 5));
-		contentPane.setLayout(new BorderLayout(0, 0));
+	public void setController(IMessageEditorController controller) {
+		this.controller = controller;
+	}
 
-		return contentPane;
+	public InfoTab(IMessageEditorController controller, boolean editable, IExtensionHelpers helpers, IBurpExtenderCallbacks callbacks) {
+		this.controller = controller;
+		panel = new InfoPanel(this);
+		BurpExtender.getCallbacks().customizeUiComponent(panel);//尝试使用burp的font size
 	}
 
 	@Override
-	public String getTabCaption()
-	{
+	public String getTabCaption() {
 		return "Info";
 	}
 
 	@Override
-	public Component getUiComponent()
-	{
+	public Component getUiComponent() {
 		return panel;
 	}
 
 	@Override
-	public boolean isEnabled(byte[] content, boolean isRequest)
-	{
+	public boolean isEnabled(byte[] content, boolean isRequest) {
+		if (isRequest) {
+			return false;
+		}
+		String contentType = BurpExtender.getHelperPlus().getHeaderValueOf(isRequest, content, "Content-Type");
+		if (StringUtils.isEmpty(contentType)) {
+			return true;
+		}
+		if (contentType.contains("image/")) {
+			return false;
+		} else if (contentType.contains("text/css")) {
+			return false;
+		} else if (contentType.contains("font/")) {
+			return false;
+		} else if (contentType.contains("x-protobuf")) {
+			return false;
+		}
+
 		return true;
 	}
 
-	@Override
-	public void setMessage(byte[] content, boolean isRequest)
-	{
-		originContent = content;
-		
-	}
-
-
 	/**
-	 * 中文下的编辑还是有问题，暂不支持。
-	 * 始终返回原始内容。
+	 * 每次切换到这个tab，都会调用这个函数。应考虑避免重复劳动，根据originContent是否变化来判断。
+	 * 测试发现:
+	 * 当在proxy页面点击一个数据包进行数据包切换时，触发infoTab处理逻辑，同一个数据包这个函数会被触发2次！
+	 * <p>
+	 * 不是请求、响应各调用一次；而是响应包被调用两次，请求包被调用两次。而且this是同一个对象。
+	 * <p>
+	 * 第一次触发，content内容不是当前数据包（点击选择的数据包）的，而是上一个数据包的。
+	 * 第二次触发，content才是当前数据包的内容，也就是点击选择的数据包的内容。
+	 * 造成一个结果就是，切换到新的数据包后，上一个数据包中提取到的内容会在当前数据包中显示。
 	 */
 	@Override
-	public byte[] getMessage()
-	{
-		return originContent;
-	}
-
-	@Override
-	public boolean isModified()
-	{
-		return false;
-	}
-
-	@Override
-	public byte[] getSelectedData()
-	{
-		return null;//TODO
-	}
-
-	public static boolean isJSON(byte[] content,boolean isRequest) {
+	public void setMessage(byte[] content, boolean isRequest) {
 		if (isRequest) {
-			IRequestInfo requestInfo = helpers.analyzeRequest(content);
-			return requestInfo.getContentType() == IRequestInfo.CONTENT_TYPE_JSON;
+			return;
+		}
+
+		//boolean debug = true;
+		if (debug) {
+			System.out.println("\n\n##################");
+			System.out.println("triggerTime:" + triggerTime++);
+			System.out.println(controller.getHttpService());
+			System.out.println("content from controller:\n" + new String(controller.getResponse()));
+			System.out.println("content from parameter:\n" + new String(content));//切换数据包时，第一次的触发会发现这个内容是上一个数据包的。
+			System.out.println("equal:\n" + ByteArrayUtils.equals(controller.getResponse(), content));
+			System.out.println(this);
+			System.out.println(((InfoPanel) panel).getTable().getInfoTableModel());
+			System.out.println("##################");
+		}
+
+		content = controller.getResponse();
+		//从controller中获取真实的数据包，避免上面提到的，content是上一个数据包的问题。
+		if (content == null || content.length == 0) {
+			return;
+		} else if (ByteArrayUtils.equals(originContent, content)) {
+			return;
 		} else {
-			IResponseInfo responseInfo = helpers.analyzeResponse(content);
-			return responseInfo.getInferredMimeType().equals("JSON");
+			originContent = content;
+			SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+				@Override
+				protected Void doInBackground() throws Exception {
+					((InfoPanel) panel).getTable().getInfoTableModel().clear();
+					List<String> urls = FindUrlAction.findUrls(originContent);
+
+					for (String url : urls) {
+						InfoEntry aaa = new InfoEntry(url, InfoEntry.Type_URL);
+						((InfoPanel) panel).getTable().getInfoTableModel().addNewInfoEntry(aaa);
+					}
+
+					List<String> emails = EmailUtils.grepEmail(new String(originContent));
+					emails = TextUtils.deduplicate(emails);
+					for (String email : emails) {
+						InfoEntry aaa = new InfoEntry(email, InfoEntry.Type_Email);
+						((InfoPanel) panel).getTable().getInfoTableModel().addNewInfoEntry(aaa);
+					}
+
+					return null;
+				}
+			};
+			worker.execute();
 		}
 	}
 
 
+	@Override
+	public byte[] getMessage() {
+		return originContent;
+	}
+
+	@Override
+	public boolean isModified() {
+		return false;
+	}
+
+	/**
+	 * ctrl+c复制数据逻辑会调用这个函数
+	 */
+	@Override
+	public byte[] getSelectedData() {
+		InfoTable table = (InfoTable) ((InfoPanel) panel).getTable();
+		String content = table.getSelectedContent();
+		return content.getBytes();
+	}
+
+
 	public static void main(String[] args) {
-		String aaa = "STK_7411642209636022({\"errno\":1003,\"errmsg\":\"\\u7528\\u6237\\u672a\\u767b\\u5f55\",\"errmsg_lang\":{\"zh\":\"\\u7528\\u6237\\u672a\\u767b\\u5f55\",\"en\":\"User is not logged in.\",\"zh-HK\":\"\\u7528\\u6236\\u672a\\u767b\\u9304\"},\"data\":null});";
-		System.out.println(StringEscapeUtils.unescapeJava(aaa));
 	}
 }
